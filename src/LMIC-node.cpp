@@ -51,7 +51,212 @@
  ******************************************************************************/
 
 #include "LMIC-node.h"
+#include <SPI.h>
+#include <RH_RF95.h>
+#include <stdio.h>
 
+#define RH_FLAGS_ACK 0x80
+
+// https://github.com/Xinyuan-LilyGO/TTGO-LoRa-Series 
+// TTGO datasheet values for CS, RST... INT is probably DIO0 based on example here:
+// https://www.hackster.io/davidefa/esp32-lora-mesh-1-the-basics-3a0920
+#define RFM95_CS 18
+#define RFM95_RST 23
+#define RFM95_INT 26
+
+/* for feather32u4
+#define RFM95_CS 8
+#define RFM95_RST 4
+#define RFM95_INT 7
+*/
+
+/* for feather m0  */
+// #define RFM95_CS 8
+// #define RFM95_RST 4
+// #define RFM95_INT 3
+
+/* for shield 
+#define RFM95_CS 10
+#define RFM95_RST 9
+#define RFM95_INT 7
+*/
+
+/* Feather 32u4 w/wing
+#define RFM95_RST     11   // "A"
+#define RFM95_CS      10   // "B"
+#define RFM95_INT     2    // "SDA" (only SDA/SCL/RX/TX have IRQ!)
+*/
+
+/* Feather m0 w/wing 
+#define RFM95_RST     11   // "A"
+#define RFM95_CS      10   // "B"
+#define RFM95_INT     6    // "D"
+*/
+
+/* Teensy 3.x w/wing 
+#define RFM95_RST     9   // "A"
+#define RFM95_CS      10   // "B"
+#define RFM95_INT     4    // "C"
+*/
+
+// Change to 434.0 or other frequency, must match RX's freq!
+#define RF95_FREQ 868.5
+
+// Singleton instance of the radio driver
+RH_RF95 rf95(RFM95_CS, RFM95_INT);
+
+// Blink LED on packet receipt (Adafruit M0 here)
+// #define LED 13
+ 
+
+int16_t rxCount = 0;                                        // packet counter
+uint8_t rxBuffer[RH_RF95_MAX_MESSAGE_LEN];                  // receive buffer
+uint8_t rxRecvLen;                                          // number of bytes actually received
+char printBuffer[512] = "\0";                               // to send output to the PC
+char formatString[] = {"%d~%d~%d~%d~%d~%d~%2x~%s~%d~%s"};
+char legendString[] = "Rx Count~Rx@millis~LastRSSI~FromAddr~ToAddr~MsgId~HdrFlags~isAck~PacketLen~PacketContents";
+
+enum OutputMode { verbose, delimited };
+
+/* Define your desired output format here */
+OutputMode mode = verbose;
+#define DELIMETER_CHAR '~'
+
+void customSetup() {
+    // pinMode(LED, OUTPUT);     
+    pinMode(RFM95_RST, OUTPUT);
+    digitalWrite(RFM95_RST, HIGH);
+
+    // while (!Serial);
+    // Serial.begin(9600);
+    // delay(100);
+
+  Serial.print("Feather LoRa Network Probe [Mode=");
+  Serial.print(mode == verbose ? "verbose" : "delimeted");
+  Serial.println("]");
+  
+  //manual reset
+  digitalWrite(RFM95_RST, LOW);
+  delay(10);
+  digitalWrite(RFM95_RST, HIGH);
+  delay(10);
+
+    // from some page
+    // pinMode(RFM95_RST, INPUT); 
+
+    // delay(150);
+
+    // digitalWrite(RFM95_RST, LOW);
+    // pinMode(RFM95_RST, OUTPUT);
+
+    // delayMicroseconds(100); 
+    // pinMode(RFM95_RST, INPUT); 
+    // delay(20);
+
+  if (!rf95.init()) {
+    Serial.println("LoRa radio init failed");
+    while (1);
+  }
+  Serial.println("LoRa radio init OK!");
+
+  if (!rf95.setFrequency(RF95_FREQ)) {                  // Defaults after init are 434.0MHz, modulation GFSK_Rb250Fd250, +13dbM
+      Serial.println("setFrequency failed");
+      while (1);                                        // if can't set frequency, we are cooked!
+  }
+  Serial.print("Set Freq to: "); Serial.println(RF95_FREQ);
+
+    // Defaults after init are 434.0MHz, 13dBm, Bw = 125 kHz, Cr = 4/5, Sf = 128chips/symbol, CRC on
+
+    // need to setPromiscuous(true) to receive all frames
+    rf95.setPromiscuous(true);
+
+    // set delimeter
+    if (mode == delimited) {
+        if (DELIMETER_CHAR != '~') {
+            for (int i = 0; i < sizeof(formatString); i++)
+            {
+                if (formatString[i] == '~')
+                    formatString[i] = DELIMETER_CHAR;
+            }
+            for (int i = 0; i < sizeof(legendString); i++)
+            {
+                if (legendString[i] == '~')
+                    legendString[i] = DELIMETER_CHAR;
+            }
+        }
+        Serial.println(legendString);
+    }
+}
+
+float freqencies[10] = {867.1, 867.3, 867.5, 867.7, 867.9, 868.1, 868.3, 868.5};
+int freqsLength = 8;
+int currentFreqIndex = 0;
+
+void setNextFrequency() {
+    rf95.setFrequency(freqencies[currentFreqIndex++]);
+
+    if(currentFreqIndex >= freqsLength) {
+        currentFreqIndex = 0;
+    }
+}
+
+void printBytes() {
+    Serial.println("Data Buffer:");
+    for(int i=0; i<rxRecvLen; i++) {
+        Serial.print(i);
+        Serial.print(": ");
+        Serial.print(rxBuffer[i]);
+        Serial.print("; ");
+    }
+    Serial.println("\n");
+
+    for(int i=0; i<rxRecvLen; i++) {
+        Serial.print(rxBuffer[i], HEX);
+        Serial.print(" ");
+    }
+
+    Serial.println("\n");
+}
+
+void customLoop()
+{
+    // wait for a lora packet
+    rxRecvLen = sizeof(rxBuffer);               // RadioHead expects max buffer, will update to received bytes
+    //digitalWrite(LED, LOW);
+    //setNextFrequency();
+
+    if (rf95.available())
+    { 
+        Serial.println("ahoj");
+        //digitalWrite(LED, HIGH);
+        if (rf95.recv(rxBuffer, &rxRecvLen))
+        {
+            char isAck[4] = {""};
+            if (rf95.headerFlags() & RH_FLAGS_ACK)
+                memcpy(isAck, "Ack\0", 3);
+            rxBuffer[rxRecvLen] = '\0';
+            
+            if (mode == delimited)
+            {
+                snprintf(printBuffer, sizeof(printBuffer), formatString, rxCount++, millis(), rf95.lastRssi(), rf95.headerFrom(), rf95.headerTo(), rf95.headerId(), rf95.headerFlags(), isAck, rxRecvLen, rxBuffer);
+                Serial.println(printBuffer);
+            }
+            else
+            {
+                snprintf(printBuffer, sizeof(printBuffer), "Recv#:%d @ %d,   Signal(RSSI)= %d", rxCount++, millis(), rf95.lastRssi());
+                Serial.println(printBuffer);
+                snprintf(printBuffer, sizeof(printBuffer), " From: %d >> To: %d     MsgId: %d  Flags: %2x    %s", rf95.headerFrom(), rf95.headerTo(), rf95.headerId(), rf95.headerFlags(), isAck);
+                Serial.println(printBuffer);
+                snprintf(printBuffer, sizeof(printBuffer), "Bytes: %d => %s \r\n", rxRecvLen, rxBuffer);
+                Serial.println(printBuffer);
+                printBytes();
+            }
+        }
+    }
+    else {
+        //os_runloop_once();
+    }
+}
 
 //  █ █ █▀▀ █▀▀ █▀▄   █▀▀ █▀█ █▀▄ █▀▀   █▀▄ █▀▀ █▀▀ ▀█▀ █▀█
 //  █ █ ▀▀█ █▀▀ █▀▄   █   █ █ █ █ █▀▀   █▀▄ █▀▀ █ █  █  █ █
@@ -765,12 +970,12 @@ void processWork(ostime_t doWorkJobTimeStamp)
         else
         {
             // Prepare uplink payload.
-            uint8_t fPort = 10;
-            payloadBuffer[0] = counterValue >> 8;
-            payloadBuffer[1] = counterValue & 0xFF;
-            uint8_t payloadLength = 2;
+            // uint8_t fPort = 10;
+            // payloadBuffer[0] = counterValue >> 8;
+            // payloadBuffer[1] = counterValue & 0xFF;
+            // uint8_t payloadLength = 2;
 
-            scheduleUplink(fPort, payloadBuffer, payloadLength);
+            // scheduleUplink(fPort, payloadBuffer, payloadLength);
         }
     }
 }    
@@ -839,12 +1044,17 @@ void setup()
         abort();
     }
 
+    customSetup();
+    return;
+
     initLmic();
+
+    //customSetup();    
 
 //  █ █ █▀▀ █▀▀ █▀▄   █▀▀ █▀█ █▀▄ █▀▀   █▀▄ █▀▀ █▀▀ ▀█▀ █▀█
 //  █ █ ▀▀█ █▀▀ █▀▄   █   █ █ █ █ █▀▀   █▀▄ █▀▀ █ █  █  █ █
 //  ▀▀▀ ▀▀▀ ▀▀▀ ▀ ▀   ▀▀▀ ▀▀▀ ▀▀  ▀▀▀   ▀▀  ▀▀▀ ▀▀▀ ▀▀▀ ▀ ▀
-
+    
     // Place code for initializing sensors etc. here.
 
     resetCounter();
@@ -865,5 +1075,6 @@ void setup()
 
 void loop() 
 {
-    os_runloop_once();
+    customLoop();
+    //os_runloop_once();
 }
